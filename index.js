@@ -279,6 +279,21 @@ exports.evm2wasm = function (evmCode, opts = {
 }
 
 /**
+ * Transcompiles EVM code to normalized WebAssembly text format.
+ * @param {Integer} evmCode the evm byte code
+ * @param {Object} opts
+ * @return {string}
+ */
+exports.evm2wat = function (evmCode, opts = {
+  'stackTrace': false,
+  'useAsyncAPI': false,
+  'inlineOps': true,
+  'chargePerOp': false
+}) {
+  return normalizeWat(exports.evm2wast(evmCode, opts))
+}
+
+/**
  * Transcompiles EVM code to ewasm in the sexpression text format. The EVM code
  * is broken into segments and each instruction in those segments is replaced
  * with a `call` to wasm function that does the equivalent operation. Each
