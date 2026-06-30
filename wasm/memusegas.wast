@@ -38,10 +38,10 @@
   ;; adjust for 32 bytes  - the maximal size of MSTORE write
   ;; TODO it should be current_memory * page_size
   (set_local $offset (i32.add (get_local $length) (i32.add (get_local $offset) (get_global $memstart))))
-  (if (i32.gt_u (get_local $offset) (i32.mul (i32.const 65536) (current_memory)))
+  (if (i32.gt_u (get_local $offset) (i32.mul (i32.const 65536) (memory.size)))
     (then
-      (drop (grow_memory
-        (i32.div_u (i32.add (i32.const 65535) (i32.sub (get_local $offset) (current_memory))) (i32.const 65536))))
+      (drop (memory.grow
+        (i32.div_u (i32.add (i32.const 65535) (i32.sub (get_local $offset) (memory.size))) (i32.const 65536))))
     )
   )
 )

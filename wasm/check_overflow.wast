@@ -16,7 +16,7 @@
       (i32.and 
         (i64.eqz  (get_local $b))
         (i64.lt_u (get_local $a) (i64.extend_u/i32 (get_local $MAX_INT)))))
-     (return (i32.wrap/i64 (get_local $a))))
+    (then (return (i32.wrap/i64 (get_local $a)))))
 
      (return (get_local $MAX_INT))
 )
