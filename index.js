@@ -686,6 +686,10 @@ function resolveFunctionDeps (funcSet) {
   return funcs
 }
 
+function uniqueStrings (items) {
+  return Array.from(new Set(items.filter(Boolean)))
+}
+
 /**
  * given a Set of wasm function this return an array for wasm equivalents
  * @param {Set} funcSet
@@ -698,7 +702,7 @@ exports.resolveFunctions = function (funcSet, wastFiles) {
     funcs.push(wastFiles[func].wast)
     imports.push(wastFiles[func].imports)
   }
-  return [funcs, imports]
+  return [funcs, uniqueStrings(imports)]
 }
 
 /**
@@ -708,6 +712,8 @@ exports.resolveFunctions = function (funcSet, wastFiles) {
  * @return {string}
  */
 exports.buildModule = function (funcs, imports = [], callbacks = []) {
+  imports = uniqueStrings(imports)
+
   let funcStr = ''
   for (let func of funcs) {
     funcStr += func

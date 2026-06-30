@@ -11,6 +11,12 @@ Minimal EVM bytecode to WebAssembly compiler.
 npm install
 ```
 
+The CLI validates every `.wasm` file it writes with `wasm-validate`, so WABT must be installed and available:
+
+```sh
+sudo apt install wabt
+```
+
 ## CLI
 
 ### Produce WASM
@@ -20,6 +26,8 @@ bin/evm2wasm.js 6000 -o out.wasm
 bin/evm2wasm.js bytecode.hex -o out.wasm
 bin/evm2wasm.js bytecode.bin -o out.wasm
 ```
+
+Every `.wasm` file left on disk has passed `wasm-validate`. If validation fails, the CLI deletes the generated `.wasm` and exits with an error.
 
 To convert from hexadecimal to `.bin`, this one-liner can be useful:
 
@@ -35,6 +43,8 @@ bin/evm2wasm.js bytecode.hex -o out.wasm --wat myOut.wat
 ```
 
 When `--wat` is passed without a file, the text output is derived from `-o`; for example `out.wasm` writes `out.wat`.
+
+When producing WAT together with WASM, the WAT file is written only after the `.wasm` output has passed `wasm-validate`; failed WASM outputs are discarded.
 
 ### Produce WASM and WAST
 

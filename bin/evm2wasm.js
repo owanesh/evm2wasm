@@ -2,6 +2,7 @@
 
 const evm2wasm = require('../index.js')
 const argv = require('minimist')(process.argv.slice(2))
+const childProcess = require('child_process')
 const fs = require('fs')
 var tou8 = require('buffer-to-uint8array')
 
@@ -55,6 +56,40 @@ function storeOrPrintResult (output, outputFile) {
   } else {
     console.log(Buffer.from(output).toString('binary'))
   }
+}
+
+function findWasmValidate () {
+  const candidates = [
+    '/opt/homebrew/bin/wasm-validate',
+    '/usr/local/bin/wasm-validate',
+    '/usr/bin/wasm-validate'
+  ]
+
+  const absolutePath = candidates.find((candidate) => fs.existsSync(candidate))
+  if (absolutePath) {
+    return absolutePath
+  }
+
+  try {
+    return childProcess.execFileSync('/bin/sh', ['-c', 'command -v wasm-validate'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()
+  } catch (err) {
+    return undefined
+  }
+}
+
+function validateWasmFile (outputFile) {
+  const wasmValidate = findWasmValidate()
+
+  if (!wasmValidate) {
+    throw new Error('wasm-validate not found; install wabt before producing wasm files')
+  }
+
+  childProcess.execFileSync(wasmValidate, [outputFile], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
 }
 
 function decodeBytecode (input, fromFile) {
@@ -118,12 +153,26 @@ try {
     bytecode = decodeBytecode(input, false)
   }
 
-  if (textOutputFile) {
-    fs.writeFileSync(textOutputFile, convertText(bytecode, { trace: trace, chargePerOp: chargePerOp }))
-  }
-
   convert(bytecode, { textOnly: textOnly, trace: trace, chargePerOp: chargePerOp }).then((result) => {
     storeOrPrintResult(result, outputFile)
+    if (outputFile && !textOnly) {
+      try {
+        validateWasmFile(outputFile)
+      } catch (err) {
+        try {
+          fs.unlinkSync(outputFile)
+        } catch (unlinkErr) {}
+        if (textOutputFile) {
+          try {
+            fs.unlinkSync(textOutputFile)
+          } catch (unlinkErr) {}
+        }
+        throw err
+      }
+    }
+    if (textOutputFile) {
+      fs.writeFileSync(textOutputFile, convertText(bytecode, { trace: trace, chargePerOp: chargePerOp }))
+    }
   }).catch((err) => {
     // Separately handle async promise errors here so they're not swallowed silently
     console.error('Error:' + err)
