@@ -3,7 +3,174 @@ const ethUtil = require('ethereumjs-util')
 const opcodes = require('./opcodes.js')
 const wastSyncInterface = require('./wasm/wast.json')
 const wastAsyncInterface = require('./wasm/wast-async.json')
-const wabt = require('wabt')
+const wabtFactory = require('wabt')
+const childProcess = require('child_process')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+
+let wabtModule
+
+function getWabt () {
+  if (wabtModule) {
+    return Promise.resolve(wabtModule)
+  }
+
+  if (typeof wabtFactory.parseWat === 'function') {
+    wabtModule = wabtFactory
+    return Promise.resolve(wabtModule)
+  }
+
+  const factory = wabtFactory.default || wabtFactory
+  const result = factory()
+
+  if (result && typeof result.then === 'function') {
+    return result.then((module) => {
+      wabtModule = module
+      return wabtModule
+    })
+  }
+
+  wabtModule = result
+  return Promise.resolve(wabtModule)
+}
+
+function readExpressionEnd (wat, start) {
+  let depth = 0
+
+  for (let i = start; i < wat.length; i++) {
+    if (wat[i] === '(') {
+      depth++
+    } else if (wat[i] === ')') {
+      depth--
+      if (depth === 0) {
+        return i + 1
+      }
+    }
+  }
+
+  return start
+}
+
+function skipWhitespace (wat, start) {
+  let i = start
+  while (i < wat.length) {
+    if (/\s/.test(wat[i])) {
+      i++
+    } else if (wat.slice(i, i + 2) === ';;') {
+      const newline = wat.indexOf('\n', i)
+      i = newline === -1 ? wat.length : newline + 1
+    } else {
+      break
+    }
+  }
+  return i
+}
+
+function splitTopLevelExpressions (wat) {
+  const expressions = []
+  let i = skipWhitespace(wat, 0)
+
+  while (i < wat.length) {
+    if (wat[i] !== '(') {
+      break
+    }
+
+    const end = readExpressionEnd(wat, i)
+    expressions.push(wat.slice(i, end))
+    i = skipWhitespace(wat, end)
+  }
+
+  return expressions
+}
+
+function wrapLegacyIfs (wat) {
+  let output = ''
+
+  for (let i = 0; i < wat.length; i++) {
+    if (wat.slice(i, i + 3) === '(if' && /\s/.test(wat[i + 3] || '')) {
+      const ifEnd = readExpressionEnd(wat, i)
+      let conditionStart = skipWhitespace(wat, i + 3)
+      let resultExpr = ''
+
+      if (wat.slice(conditionStart, conditionStart + 7) === '(result') {
+        const resultEnd = readExpressionEnd(wat, conditionStart)
+        resultExpr = wat.slice(conditionStart, resultEnd)
+        conditionStart = skipWhitespace(wat, resultEnd)
+      }
+
+      const conditionEnd = readExpressionEnd(wat, conditionStart)
+      const bodyStart = skipWhitespace(wat, conditionEnd)
+      const body = wat.slice(bodyStart, ifEnd - 1)
+
+      if (wat.slice(bodyStart, bodyStart + 5) !== '(then' && wat.slice(bodyStart, bodyStart + 5) !== '(else' && wat[bodyStart] === '(') {
+        if (resultExpr) {
+          const branches = splitTopLevelExpressions(body)
+          output += '(if ' + resultExpr + ' ' + wat.slice(conditionStart, conditionEnd) + ' (then ' + wrapLegacyIfs(branches[0] || '') + ')'
+          if (branches[1]) {
+            output += ' (else ' + wrapLegacyIfs(branches.slice(1).join(' ')) + ')'
+          }
+          output += ')'
+        } else {
+          output += wat.slice(i, bodyStart) + '(then ' + wrapLegacyIfs(body) + '))'
+        }
+        i = ifEnd - 1
+        continue
+      }
+    }
+
+    output += wat[i]
+  }
+
+  return output
+}
+
+function normalizeWat (wat) {
+  wat = wat
+    .replace(/\((get|set|tee)_(local|global)\b/g, (match, op, scope) => {
+      return '(' + scope + '.' + op
+    })
+    .replace(/\bi(32|64)\.extend_([su])\/i(32|64)\b/g, (match, target, sign, source) => {
+      return 'i' + target + '.extend_i' + source + '_' + sign
+    })
+    .replace(/\bi(32|64)\.wrap\/i(32|64)\b/g, (match, target, source) => {
+      return 'i' + target + '.wrap_i' + source
+    })
+    .replace(/\bcurrent_memory\b/g, 'memory.size')
+    .replace(/\bgrow_memory\b/g, 'memory.grow')
+
+  return wrapLegacyIfs(wat)
+}
+
+function compileWatWithWabtCli (wat) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'evm2wasm-'))
+  const watFile = path.join(tmpDir, 'module.wat')
+  const wasmFile = path.join(tmpDir, 'module.wasm')
+  const wat2wasm = [
+    '/opt/homebrew/bin/wat2wasm',
+    '/usr/local/bin/wat2wasm',
+    '/usr/bin/wat2wasm',
+    'wat2wasm'
+  ].find((candidate) => candidate === 'wat2wasm' || fs.existsSync(candidate))
+
+  try {
+    fs.writeFileSync(watFile, wat)
+    childProcess.execFileSync(wat2wasm, [watFile, '-o', wasmFile], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    return fs.readFileSync(wasmFile)
+  } finally {
+    try {
+      fs.unlinkSync(watFile)
+    } catch (err) {}
+    try {
+      fs.unlinkSync(wasmFile)
+    } catch (err) {}
+    try {
+      fs.rmdirSync(tmpDir)
+    } catch (err) {}
+  }
+}
 
 // map to track dependent WASM functions
 const depMap = new Map([
@@ -90,13 +257,40 @@ exports.evm2wasm = function (evmCode, opts = {
   'testName': 'temp',
   'chargePerOp': false
 }) {
-  const wast = exports.evm2wast(evmCode, opts)
-  const mod = wabt.parseWat('arbitraryModuleName', wast)
-  mod.resolveNames()
-  mod.validate()
-  const bin = mod.toBinary({log: false, write_debug_names: false}).buffer
-  mod.destroy()
-  return Promise.resolve(bin)
+  const wast = normalizeWat(exports.evm2wast(evmCode, opts))
+  return getWabt().then((wabt) => {
+    let mod
+    try {
+      mod = wabt.parseWat('arbitraryModuleName', wast)
+      mod.resolveNames()
+      mod.validate()
+      return mod.toBinary({log: false, write_debug_names: false}).buffer
+    } catch (err) {
+      if (err && err.name === 'RuntimeError' && /memory access out of bounds/.test(err.message || '')) {
+        return compileWatWithWabtCli(wast)
+      }
+      throw err
+    } finally {
+      if (mod) {
+        mod.destroy()
+      }
+    }
+  })
+}
+
+/**
+ * Transcompiles EVM code to normalized WebAssembly text format.
+ * @param {Integer} evmCode the evm byte code
+ * @param {Object} opts
+ * @return {string}
+ */
+exports.evm2wat = function (evmCode, opts = {
+  'stackTrace': false,
+  'useAsyncAPI': false,
+  'inlineOps': true,
+  'chargePerOp': false
+}) {
+  return normalizeWat(exports.evm2wast(evmCode, opts))
 }
 
 /**
@@ -474,12 +668,18 @@ function bytes2int64 (bytes) {
 // @param {Set} funcSet a set of wasm function that need to be linked to their dependencies
 // @return {Set}
 function resolveFunctionDeps (funcSet) {
-  let funcs = funcSet
-  for (let func of funcSet) {
+  const funcs = new Set(funcSet)
+  const queue = Array.from(funcs)
+
+  for (let i = 0; i < queue.length; i++) {
+    const func = queue[i]
     const deps = depMap.get(func)
     if (deps) {
       for (const dep of deps) {
-        funcs.add(dep)
+        if (!funcs.has(dep)) {
+          funcs.add(dep)
+          queue.push(dep)
+        }
       }
     }
   }
